@@ -1,0 +1,355 @@
+#include "PluggableUSBHID.h"
+//#include "USBKeyboard.h"
+#include "USBMouse.h"
+#include "USBMouseKeyboard.h"
+#include <TensorFlowLite.h>
+#include <tensorflow/lite/micro/all_ops_resolver.h>
+#include <tensorflow/lite/micro/tflite_bridge/micro_error_reporter.h>
+#include <tensorflow/lite/micro/micro_interpreter.h>
+#include <tensorflow/lite/schema/schema_generated.h>
+#include "model.h"
+USBMouse Mouse;
+//USBKeyboard Keyboard;
+USBMouseKeyboard Keyboard;
+const int bufferSize = 300;
+float bufferXn[bufferSize]; // Buffer to store xn samples
+float bufferHn[bufferSize]; // Buffer to store hn samples
+int bufferIndex = 0; // Index to keep track of the buffer position
+const float voltageThreshold = 1.35;
+const float voltageThreshold1 = 0.8;
+const int numPostThresholdSamples = 1000; // Number of samples to collect after the threshold
+float an1 = 0;
+float bn1 = 0;
+float qn1 = 0;
+float wn1 = 0;
+float cn1 = 0;
+float dn1 = 0;
+float fn1 = 0;
+float gn1 = 0;
+const int numReadings = 10;
+
+
+// global variables used for TensorFlow Lite (Micro)
+tflite::MicroErrorReporter tflErrorReporter;
+tflite::AllOpsResolver tflOpsResolver;
+const tflite::Model* tflModel = nullptr;
+tflite::MicroInterpreter* tflInterpreter = nullptr;
+TfLiteTensor* tflInputTensor = nullptr;
+TfLiteTensor* tflOutputTensor = nullptr;
+
+// Create a static memory buffer for TFLM, the size may need to
+// be adjusted based on the model you are using
+constexpr int tensorArenaSize = 8 * 1024;
+byte tensorArena[tensorArenaSize] __attribute__((aligned(16)));
+
+// array to map gesture index to a name
+const char* GESTURES[] = {
+"left",
+"e",
+"q",
+"right",
+ "up",
+ "down",
+ "blank",
+   "right fast",
+  "2",
+  "1",
+  "left click",
+  "left fast",
+  "3",
+  "4",
+  "up fast",
+  "down fast",
+  "esc"
+};
+#define NUM_GESTURES (sizeof(GESTURES) / sizeof(GESTURES[0]))
+
+void setup() {
+  Serial.begin(115200);
+  while (!Serial);
+
+  // Get the TFL representation of the model byte array
+  tflModel = tflite::GetModel(model);
+  if (tflModel->version() != TFLITE_SCHEMA_VERSION) {
+    Serial.println("Model schema mismatch!");
+    while (1);
+  }
+
+  // Create an interpreter to run the model
+  tflInterpreter = new tflite::MicroInterpreter(tflModel, tflOpsResolver, tensorArena, tensorArenaSize);
+
+  // Allocate memory for the model's input and output tensors
+  tflInterpreter->AllocateTensors();
+
+  // Get pointers for the model's input and output tensors
+  //tflInputTensor = tflInterpreter->input(0);
+  tflInputTensor = tflInterpreter->input(0);
+  tflOutputTensor = tflInterpreter->output(0);
+}
+     
+
+
+void loop() {
+  // Wait for significant motion
+  delay(1);
+  float z = analogRead(A2);
+  float t = analogRead(A5) +6.5;
+  float j = analogRead(A0) ;
+  float k = analogRead(A7) -5;
+ 
+    float an = (z * 3.3 * 10) / 1024.0;
+    float bn = (t * 3.3 * 10) / 1024.0;
+    float qn = 0.969 * qn1 + 0.0155 * an + 0.0155 * an1;
+    float wn = 0.969 * wn1 + 0.0155 * bn + 0.0155 * bn1;
+    float cn = (j * 3.3 * 15) / 1024.0;
+    float dn = (k * 3.3 * 15) / 1024.0;
+    float fn = 0.969 * fn1 + 0.0155 * cn + 0.0155 * cn1;
+    float gn = 0.969 * gn1 + 0.0155 * dn + 0.0155 * dn1;
+
+    an1 = an;
+    qn1 = qn;
+    bn1 = bn;
+    wn1 = wn;
+    float xn = qn - wn;
+    cn1 = cn;
+    dn1 = dn;
+    fn1 = fn;
+    gn1 = gn;
+    float hn = fn - gn;
+
+  // Store samples in the buffer
+    bufferXn[bufferIndex] = xn;
+    bufferHn[bufferIndex] = hn;
+    bufferIndex = (bufferIndex + 1) % bufferSize; // Wrap around if bufferIndex exceeds bufferSize
+    
+
+      // Check for threshold
+  if (fabs(hn) >= voltageThreshold || fabs(xn) >= voltageThreshold1) {
+    //Serial.println("Threshold reached!");
+
+    // Calculate average of pre-threshold xn samples every 10 samples
+    float sumPreThresholdXn = 0.0;
+    int countPreThresholdXn = 0;
+
+    // Calculate average of pre-threshold hn samples every 10 samples
+    float sumPreThresholdHn = 0.0;
+    int countPreThresholdHn = 0;
+
+    //Serial.println("Pre-threshold xn and hn samples average:");
+
+    for (int x = 0; x < bufferSize; x++) {
+      int index = (bufferIndex + x) % bufferSize; // Calculate the correct index in the buffer
+      if (bufferXn[index] < voltageThreshold) {
+        sumPreThresholdXn += bufferXn[index];
+        countPreThresholdXn++;
+
+        sumPreThresholdHn += bufferHn[index];
+        countPreThresholdHn++;
+
+        // Calculate average every 10 samples
+        if (countPreThresholdXn % 10 == 0) {
+          float averagePreThresholdXn = sumPreThresholdXn / 10.0;
+          float averagePreThresholdHn = sumPreThresholdHn / 10.0;
+
+          Serial.print(averagePreThresholdXn);
+          Serial.print(",");
+          Serial.print(averagePreThresholdHn);
+          Serial.println();
+          //Serial.println("1:");
+          //Serial.println(countPreThresholdXn/10-1);
+          //tflInputTensor->data.f[(countPreThresholdXn/10)*2-1] = averagePreThresholdXn / 5;
+          //tflInputTensor->data.f[(countPreThresholdHn/10)*2] = averagePreThresholdHn / 5;
+          tflInputTensor->data.f[countPreThresholdXn/10-1] = averagePreThresholdXn / 10;
+          tflInputTensor->data.f[30 + (countPreThresholdXn/10-1)] = averagePreThresholdHn / 10;
+         
+
+          sumPreThresholdXn = 0.0;
+          sumPreThresholdHn = 0.0;
+        }
+      }
+    }  
+   // Calculate average of post-threshold xn samples every 10 samples
+    float sumPostThresholdXn = 0.0;
+    int countPostThresholdXn = 0;
+
+    // Calculate average of post-threshold hn samples every 10 samples
+    float sumPostThresholdHn = 0.0;
+    int countPostThresholdHn = 0;
+
+    //Serial.println("Post-threshold xn and hn samples average:");
+
+    for (int x = 0; x < numPostThresholdSamples; x++) {
+      delay(1);
+      float z = analogRead(A2) ;
+      float t = analogRead(A5) +6.5;
+      float j = analogRead(A0) ;
+      float k = analogRead(A7) - 5;
+
+  float an = (z * 3.3 * 10) / 1024.0;
+  float bn = (t * 3.3 * 10) / 1024.0;
+  float qn = 0.969 * qn1 + 0.0155 * an + 0.0155 * an1;
+  float wn = 0.969 * wn1 + 0.0155 * bn + 0.0155 * bn1;
+  float cn = (j * 3.3 * 15) / 1024.0;
+  float dn = (k * 3.3 * 15) / 1024.0;
+  float fn = 0.969 * fn1 + 0.0155 * cn + 0.0155 * cn1;
+  float gn = 0.969 * gn1 + 0.0155 * dn + 0.0155 * dn1;
+
+
+  an1 = an;
+  qn1 = qn;
+  bn1 = bn;
+  wn1 = wn;
+  float xn = qn - wn;
+  cn1 = cn;
+  dn1 = dn;
+  fn1 = fn;
+  gn1 = gn;
+  float hn = fn - gn;
+
+
+      // Perform calculations and update variables for xn and hn
+      // ...
+
+
+
+      sumPostThresholdXn += xn;
+      countPostThresholdXn++;
+    
+      sumPostThresholdHn += hn;
+      countPostThresholdHn++;
+
+      // Calculate average every 10 samples
+      if (countPostThresholdXn % 10 == 0) {
+        float averagePostThresholdXn = sumPostThresholdXn / 10.0;
+        float averagePostThresholdHn = sumPostThresholdHn / 10.0;
+
+        Serial.print(averagePostThresholdXn);
+        Serial.print(",");
+        Serial.print(averagePostThresholdHn);
+        Serial.println();
+        //Serial.print("2:");
+        //Serial.println(85 + countPostThresholdXn / 10 - 1);
+
+        sumPostThresholdXn = 0.0;
+        sumPostThresholdHn = 0.0;
+      //Store the averaged value
+      //tflInputTensor->data.f[170 + ((countPostThresholdXn / 10)*2-1)] =  averagePostThresholdXn / 5 ;
+      //tflInputTensor->data.f[170 + ((countPostThresholdXn / 10)*2)] =  averagePostThresholdHn / 5;
+      tflInputTensor->data.f[60+(countPostThresholdXn/10 -1)] = averagePostThresholdXn / 10;
+      tflInputTensor->data.f[160+(countPostThresholdXn/10 -1)] = averagePostThresholdHn / 10;
+      }
+    }
+   
+  
+  
+
+
+
+  if (countPostThresholdXn == numPostThresholdSamples) {
+    // Run inferencing
+    TfLiteStatus invokeStatus = tflInterpreter->Invoke();
+    if (invokeStatus != kTfLiteOk) {
+      Serial.println("Invoke failed!");
+      while (1);
+    }
+
+    //Serial.print("NUM_GESTURES: ");
+    //Serial.println(NUM_GESTURES);
+
+    // Print the output probabilities
+    for (int i = 0; i < NUM_GESTURES; i++) {
+      Serial.print(GESTURES[i]);
+      Serial.print(": ");
+      Serial.println(tflOutputTensor->data.f[i], 6);
+    }
+
+    // Add an empty line if it's the last sample
+    Serial.println("Inference completed");
+    Serial.println();
+    // After printing output probabilities
+int maxIndex = 0;
+float maxProbability = 0.0;
+
+for (int i = 0; i < NUM_GESTURES; i++) {
+  Serial.print(GESTURES[i]);
+  Serial.print(": ");
+  Serial.println(tflOutputTensor->data.f[i], 6);
+
+  if (tflOutputTensor->data.f[i] > maxProbability) {
+    maxProbability = tflOutputTensor->data.f[i];
+    maxIndex = i;
+  }
+}
+
+// Print the predicted gesture
+Serial.print("Predicted Gesture: ");
+Serial.println(GESTURES[maxIndex]);
+
+// Perform action based on the predicted gesture
+if (maxIndex == 0) {  // Single click for 'w'
+    Serial.print("a");
+    Keyboard.key_code(0x61, 0);  // Send 'w' as keyboard input
+} else if (maxIndex == 1) {  // Double click for 'a'
+    Serial.print("e");
+    Keyboard.key_code(0x65, 0);  // Send 'a' as keyboard input
+} else if (maxIndex == 2) {  // Double click for 's'
+    Serial.print("q");
+    Keyboard.key_code(0x71, 0);  // Send 's' as keyboard input
+} else if (maxIndex == 3) {  // Double click for 'd'
+    Serial.print("d");
+    Keyboard.key_code(0x64, 0);  // Send 'd' as keyboard input
+} else if (maxIndex == 4) {  // Double click for 'e'
+    Serial.print("w");
+    Keyboard.key_code(0x77, 0);  // Send 'e' as keyboard input
+} else if (maxIndex == 5) {  // Double click for 'q'
+    Serial.print("s");
+    Keyboard.key_code(0x73, 0);  // Send 'q' as keyboard input
+} else if (maxIndex == 6) {  // Double click for 'a'
+    Serial.print("space");
+    Keyboard.key_code(0x20, 0);
+} else if (maxIndex == 7) {
+    for (int i = 0; i < 10; i++) {
+      Serial.print("d fast");
+      Keyboard.key_code(0x64, 0);
+      delay(100);  }
+} else if (maxIndex == 8) {  // Double click for 'a'
+    Serial.print("2");
+    Keyboard.key_code(0x32, 0);
+} else if (maxIndex == 9) {  // Double click for 'a'
+    Serial.print("1");
+    Keyboard.key_code(0x31, 0);
+} else if (maxIndex == 10) {  // Double click for 'a'
+    Serial.print("left click");
+    Mouse.click(MOUSE_LEFT);
+} else if (maxIndex == 11) {  // Double click for 'a'
+    for (int i = 0; i < 10; i++) {
+      Serial.print("a fast");
+      Keyboard.key_code(0x61,0);
+      delay(100);
+    }
+
+} else if (maxIndex == 12) {  // Double click for 'a'
+    Serial.print("3");
+    Keyboard.key_code(0x33, 0);
+} else if (maxIndex == 13) {  // Double click for 'a'
+    Serial.print("4");
+    Keyboard.key_code(0x34, 0);
+} else if (maxIndex == 14) {  // Double click for 'a'
+    for (int i = 0; i < 10; i++) {
+      Serial.print("w fast");
+      Keyboard.key_code(0x77,0); // Press 'w'
+      delay(100); // Adjust delay as needed
+    }
+      
+} else if (maxIndex == 15) { 
+    for (int i = 0; i < 10; i++) {
+      Serial.print("s fast");
+      Keyboard.key_code(0x73, 0);
+      delay(100);}
+} else if (maxIndex == 16) {  
+    Serial.print("esc");
+    Keyboard.key_code(0x20);
+}
+}
+}
+}

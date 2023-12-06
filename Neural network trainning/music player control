@@ -1,0 +1,173 @@
+# Setup environment
+!apt-get -qq install xxd
+!pip install pandas numpy matplotlib
+!pip install tensorflow==2.12
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+def add_baseline_shift(signal, max_shift=0.1):
+    baseline_shift = np.random.uniform(-max_shift, max_shift)
+    shifted_signal = [value + baseline_shift for value in signal]
+    return shifted_signal
+def random_scale(signal, scale_factor_range=(0.8, 1.2)):
+    scale_factor = np.random.uniform(scale_factor_range[0], scale_factor_range[1])
+    scaled_signal = [value * scale_factor for value in signal]
+    return scaled_signal
+
+print(f"TensorFlow version = {tf.__version__}\n")
+
+# Set a fixed random seed value, for reproducibility, this will allow us to get
+# the same random numbers each time the notebook is run
+SEED = 1337
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# the list of gestures that data is available for
+GESTURES = [
+    "single click",
+    "double click",
+    "triple click",
+    "slide1",
+    "slide2",
+    "long press"
+]
+
+SAMPLES_PER_GESTURE = 180
+
+NUM_GESTURES = len(GESTURES)
+
+# create a one-hot encoded matrix that is used in the output
+ONE_HOT_ENCODED_GESTURES = np.eye(NUM_GESTURES)
+
+inputs = []
+outputs = []
+
+# read each csv file and push an input and output
+for gesture_index in range(NUM_GESTURES):
+    gesture = GESTURES[gesture_index]
+    print(f"Processing index {gesture_index} for gesture '{gesture}'.")
+
+    output = ONE_HOT_ENCODED_GESTURES[gesture_index]
+
+    df = pd.read_csv(f"{gesture}.csv")
+
+    # calculate the number of gesture recordings in the file
+    num_recordings = int(df.shape[0] / SAMPLES_PER_GESTURE)
+
+    print(f"\tThere are {num_recordings} recordings of the {gesture} gesture.")
+
+    for i in range(num_recordings):
+        tensor = []
+        data = []  # Initialize the data list here
+        for j in range(SAMPLES_PER_GESTURE):
+            index = i * SAMPLES_PER_GESTURE + j
+            # normalize the input data, between 0 to 1:
+            data += [
+                (df['aV'][index]) / 12,
+            ]
+        augmented_data = add_baseline_shift(data)
+        augmented_data = random_scale(augmented_data)
+        tensor.extend(augmented_data)
+
+        inputs.append(tensor)
+        outputs.append(output)
+
+# convert the list to numpy array
+inputs = np.array(inputs)
+outputs = np.array(outputs)
+
+print("Data set parsing and preparation complete.")
+# Randomize the order of the inputs, so they can be evenly distributed for training, testing, and validation
+# https://stackoverflow.com/a/37710486/2020087
+num_inputs = len(inputs)
+randomize = np.arange(num_inputs)
+np.random.shuffle(randomize)
+
+# Swap the consecutive indexes (0, 1, 2, etc) with the randomized indexes
+inputs = inputs[randomize]
+outputs = outputs[randomize]
+
+# Split the recordings (group of samples) into three sets: training, testing and validation
+TRAIN_SPLIT = int(0.8 * num_inputs)
+TEST_SPLIT = int(0.1 * num_inputs + TRAIN_SPLIT)
+
+inputs_train, inputs_test, inputs_validate = np.split(inputs, [TRAIN_SPLIT, TEST_SPLIT])
+outputs_train, outputs_test, outputs_validate = np.split(outputs, [TRAIN_SPLIT, TEST_SPLIT])
+
+print("Data set randomization and splitting complete.")
+model = tf.keras.Sequential()
+
+model.add(tf.keras.layers.Dense(50, activation='elu'))
+
+model.add(tf.keras.layers.Dense(35, activation='tanh'))
+model.add(tf.keras.layers.Dense(25, activation='leaky_relu'))
+
+
+model.add(tf.keras.layers.Dense(NUM_GESTURES, activation='softmax'))
+
+model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
+history = model.fit(inputs_train, outputs_train, epochs=150, batch_size=32, validation_data=(inputs_validate, outputs_validate))
+# increase the size of the graphs. The default size is (6,4).
+plt.rcParams["figure.figsize"] = (20,10)
+
+# graph the loss, the model above is configure to use "mean squared error" as the loss function
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = range(1, len(loss) + 1)
+plt.plot(epochs, loss, 'g.', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+print(plt.rcParams["figure.figsize"])
+# use the model to predict the test inputs
+
+import numpy as np
+np.set_printoptions(threshold=np.inf)  # Set threshold to display all array elements
+
+# use the model to predict the test inputs
+predictions = model.predict(inputs_test)
+
+# Select the first 20 results
+predictions_subset = predictions[:20]
+actual_subset = outputs_test[:20]
+# print the predictions and the expected ouputs
+print("predictions =\n", np.round(predictions, decimals=3))
+print("actual =\n", outputs_test)
+import numpy as np
+
+# use the model to predict the test inputs
+predictions = model.predict(inputs_test)
+
+# Convert the predicted probabilities to class labels
+predicted_labels = np.argmax(predictions, axis=1)
+actual_labels = np.argmax(outputs_test, axis=1)
+
+# Calculate accuracy
+accuracy = np.mean(predicted_labels == actual_labels)
+
+# print the accuracy
+print("Accuracy:", accuracy)
+# Convert the model to the TensorFlow Lite format without quantization
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+# Save the model to disk
+open("gesture_model.tflite", "wb").write(tflite_model)
+
+import os
+basic_model_size = os.path.getsize("gesture_model.tflite")
+print("Model is %d bytes" % basic_model_size)
+!echo "const unsigned char model[] = {" > /content/model.h
+!cat gesture_model.tflite | xxd -i      >> /content/model.h
+!echo "};"                              >> /content/model.h
+
+import os
+model_h_size = os.path.getsize("model.h")
+print(f"Header file, model.h, is {model_h_size:,} bytes.")
+print("\nOpen the side panel (refresh if needed). Double click model.h to download the file.")

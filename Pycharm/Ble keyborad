@@ -1,0 +1,85 @@
+import asyncio
+import bleak
+import pydirectinput
+import time
+
+async def run(device_address):
+    async with bleak.BleakClient(device_address) as client:
+        print(f"Connected: {client.is_connected}")
+
+        async def notification_handler(sender: int, data: bytearray):
+            # Decode the received data as a string
+            gesture = data.decode('utf-8')
+
+            # Print and process the received gesture
+            print(f"Received gesture: {gesture}")
+
+            # Process corresponding keypress actions
+            if gesture == "left":
+                pydirectinput.press('a')
+            elif gesture == "e":
+                pydirectinput.press('e')
+            elif gesture == "q":
+                pydirectinput.press('q')
+            elif gesture == "right":
+                pydirectinput.press('d')
+            elif gesture == "up":
+                pydirectinput.press('w')
+            elif gesture == "down":
+                pydirectinput.press('s')
+            elif gesture == "space":
+                pydirectinput.press('space')
+            elif gesture == "right fast":
+                key_to_repeat = 'd'  # Replace 'd' with the desired key
+                for _ in range(5):  # Repeat the key press and release 5 times
+                    pydirectinput.press(key_to_repeat)
+                    time.sleep(0.02)  # Adjust the delay between press and release if needed
+
+            elif gesture == "2":
+                pydirectinput.press('2')
+            elif gesture == "1":
+                pydirectinput.press('1')
+            elif gesture == "left click":
+                pydirectinput.click()
+            elif gesture == "left fast":
+                key_to_repeat = 'a'  # Replace 'd' with the desired key
+                for _ in range(5):  # Repeat the key press and release 5 times
+                    pydirectinput.press(key_to_repeat)
+                    time.sleep(0.02)  # Adjust the delay between press and release if needed
+
+            elif gesture == "3":
+                pydirectinput.press('3')
+            elif gesture == "4":
+                pydirectinput.press('4')
+            elif gesture == "up fast":
+                key_to_repeat = 'w'  # Replace 'd' with the desired key
+                for _ in range(5):  # Repeat the key press and release 5 times
+                    pydirectinput.press(key_to_repeat)
+                    time.sleep(0.02)  # Adjust the delay between press and release if needed
+
+            elif gesture == "down fast":
+                key_to_repeat = 's'  # Replace 'd' with the desired key
+                for _ in range(5):  # Repeat the key press and release 5 times
+                    pydirectinput.press(key_to_repeat)
+                    time.sleep(0.02)  # Adjust the delay between press and release if needed
+
+            elif gesture == "esc":
+                pydirectinput.press('esc')
+
+        # Set up notification handler
+        await client.start_notify("cfc47cd2-4dc5-11ee-be56-0242ac120003", notification_handler)
+
+        # Keep the program running
+        while client.is_connected:
+            await asyncio.sleep(0.1)
+
+        # Stop notification handler when disconnected
+        await client.stop_notify("cfc47cd2-4dc5-11ee-be56-0242ac120003")
+
+if __name__ == "__main__":
+    # Replace with the actual BLE device address
+    device_address = "34:85:18:7A:DD:ED"
+
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(run(device_address))
+dw

@@ -1,0 +1,348 @@
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+
+def add_baseline_shift(signal, max_shift=0.15):
+    baseline_shift = np.random.uniform(-max_shift, max_shift)
+    shifted_signal = [value + baseline_shift for value in signal]
+    return shifted_signal
+def random_scale(signal, scale_factor_range=(0.7, 1.3)):
+    scale_factor = np.random.uniform(scale_factor_range[0], scale_factor_range[1])
+    scaled_signal = [value * scale_factor for value in signal]
+    return scaled_signal
+
+print(f"TensorFlow version = {tf.__version__}\n")
+
+# Set a fixed random seed value, for reproducibility, this will allow us to get
+# the same random numbers each time the notebook is run
+SEED = 1337
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# the list of gestures that data is available for
+GESTURES = [
+    "left", "left fast", "e", "q", "right","right fast", "up", "up fast", "down", "down fast",
+    "space", "2", "1", "left click", "3", "4",
+    "esc"
+]
+
+SAMPLES_PER_GESTURE = 260
+
+NUM_GESTURES = len(GESTURES)
+
+# create a one-hot encoded matrix that is used in the output
+ONE_HOT_ENCODED_GESTURES = np.eye(NUM_GESTURES)
+
+inputs = []
+outputs = []
+
+# read each csv file and push an input and output
+for gesture_index in range(NUM_GESTURES):
+    gesture = GESTURES[gesture_index]
+    print(f"Processing index {gesture_index} for gesture '{gesture}'.")
+
+    output = ONE_HOT_ENCODED_GESTURES[gesture_index]
+
+    df = pd.read_csv("/content/" + gesture + ".csv")
+
+    # calculate the number of gesture recordings in the file
+    num_recordings = int(df.shape[0] / SAMPLES_PER_GESTURE)
+
+    print(f"\tThere are {num_recordings} recordings of the {gesture} gesture.")
+
+    for i in range(num_recordings):
+        tensor = []
+        data = []
+
+        for j in range(SAMPLES_PER_GESTURE):
+
+            index = i * SAMPLES_PER_GESTURE + j
+            # normalize the input data, between -1 to 1:
+            data += [(df['aV'][index] / 10)]
+
+        augmented_data = add_baseline_shift(data)
+        augmented_data = random_scale(augmented_data)
+        tensor.extend(augmented_data)
+
+        inputs.append(tensor)
+        outputs.append(output)
+
+# convert the list to numpy array
+inputs = np.array(inputs)
+outputs = np.array(outputs)
+
+print("Data set parsing and preparation complete.")
+import matplotlib.pyplot as plt
+import seaborn as sns
+# Assuming you have already loaded your data into the 'inputs' array
+plt.rcParams.update({'font.size': 28})
+# Define the number of recordings for each gesture
+num_recordings_per_gesture = [120, 120, 120, 120, 118, 120, 120, 120, 120, 120, 120, 120, 104]
+
+# Create a single figure with x-y line plots for one sample of each gesture
+plt.figure(figsize=(48, 16))
+
+# Define the spacing factor to separate samples
+spacing = 0.1  # Adjust this value to control the spacing between samples
+channel_spacing = 0.3  # Adjust this value to control the spacing between channels
+gesture_spacing = 5  # Adjust this value to control the spacing between gestures
+color_palette = sns.color_palette("hsv", n_colors=len(GESTURES))
+current_x = 0  # Initialize the current x position
+current_y = 0  # Initialize the current y position
+
+for gesture_index in range(NUM_GESTURES):
+    gesture = GESTURES[gesture_index]
+
+    # Calculate the starting index for the samples of the current gesture
+    start_index = sum(num_recordings_per_gesture[:gesture_index])
+
+    # Select the sample for the gesture
+    sample = inputs[start_index]
+
+    # Calculate the number of points in each channel
+    num_points = len(sample) // 2
+
+    # Create x-values for the first channel
+    x_values = [i * spacing + current_x for i in range(num_points)]  # Adjust x-values
+
+    # Create an x-y line plot for the first channel (first 130 values)
+    y_values = [val + current_y for val in sample[:num_points]]  # Adjust y-values
+    plt.plot(x_values, y_values, label=f"{gesture} (Channel 1)", color=color_palette[gesture_index])
+
+    # Create x-values for the second channel
+    x_values = [i * spacing + current_x for i in range(num_points)]  # Adjust x-values
+
+    # Create an x-y line plot for the second channel (later 130 values)
+    y_values = [val + current_y + channel_spacing for val in sample[num_points:]]  # Adjust y-values
+    plt.plot(x_values, y_values, label=f"{gesture} (Channel 2)", color=color_palette[gesture_index])
+
+    # Add spacing before the next gesture in the x-axis
+    current_x += (num_points - 1) * spacing + gesture_spacing
+
+# Customize the plot
+plt.title("")
+plt.xlabel("")
+plt.ylabel("Amplitude")
+plt.xticks([])
+
+# Hide the gridlines
+plt.ylim(-1, 0.75)
+plt.grid(False)
+
+# Hide the legends
+# plt.legend(loc="upper right")
+
+plt.show()
+# Randomize the order of the inputs, so they can be evenly distributed for training, testing, and validation
+# https://stackoverflow.com/a/37710486/2020087
+num_inputs = len(inputs)
+randomize = np.arange(num_inputs)
+np.random.shuffle(randomize)
+
+# Swap the consecutive indexes (0, 1, 2, etc) with the randomized indexes
+inputs = inputs[randomize]
+outputs = outputs[randomize]
+
+# Split the recordings (group of samples) into three sets: training, testing and validation
+TRAIN_SPLIT = int(0.8 * num_inputs)
+TEST_SPLIT = int(0.1 * num_inputs + TRAIN_SPLIT)
+
+inputs_train, inputs_test, inputs_validate = np.split(inputs, [TRAIN_SPLIT, TEST_SPLIT])
+outputs_train, outputs_test, outputs_validate = np.split(outputs, [TRAIN_SPLIT, TEST_SPLIT])
+
+
+
+print("Data set randomization and splitting complete.")
+model = tf.keras.Sequential()
+
+
+model.add(tf.keras.layers.Dense(50, activation='tanh'))
+
+model.add(tf.keras.layers.Dense(35, activation='elu'))
+model.add(tf.keras.layers.Dense(25, activation='leaky_relu'))
+
+
+model.add(tf.keras.layers.Dense(NUM_GESTURES, activation='softmax'))
+
+model.compile(optimizer='rmsprop', loss='categorical_crossentropy', metrics=['accuracy'])
+history = model.fit(inputs_train, outputs_train, epochs=150, batch_size=32, validation_data=(inputs_validate, outputs_validate))
+# increase the size of the graphs. The default size is (6,4).
+plt.rcParams["figure.figsize"] = (20,10)
+
+# graph the loss, the model above is configure to use "mean squared error" as the loss function
+loss = history.history['loss']
+val_loss = history.history['val_loss']
+epochs = range(1, len(loss) + 1)
+plt.plot(epochs, loss, 'g.', label='Training loss')
+plt.plot(epochs, val_loss, 'b', label='Validation loss')
+plt.title('Training and validation loss')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.legend()
+plt.show()
+
+print(plt.rcParams["figure.figsize"])
+# use the model to predict the test inputs
+
+import numpy as np
+np.set_printoptions(threshold=np.inf)  # Set threshold to display all array elements
+
+# use the model to predict the test inputs
+predictions = model.predict(inputs_test)
+
+# Select the first 20 results
+predictions_subset = predictions[:20]
+actual_subset = outputs_test[:20]
+# print the predictions and the expected ouputs
+print("predictions =\n", np.round(predictions, decimals=3))
+print("actual =\n", outputs_test)
+import numpy as np
+
+# use the model to predict the test inputs
+predictions = model.predict(inputs_test)
+
+# Convert the predicted probabilities to class labels
+predicted_labels = np.argmax(predictions, axis=1)
+actual_labels = np.argmax(outputs_test, axis=1)
+
+# Calculate accuracy
+accuracy = np.mean(predicted_labels == actual_labels)
+
+# print the accuracy
+print("Accuracy:", accuracy)
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
+from sklearn.metrics import confusion_matrix
+
+# Assuming you have actual labels and predictions as described in previous responses
+
+# Create a confusion matrix
+confusion = confusion_matrix(actual_labels, predicted_labels)
+
+# Define the class labels (gesture names)
+class_labels = GESTURES
+
+# Perform PCA
+pca = PCA(n_components=2)  # You can adjust the number of components
+pca_result = pca.fit_transform(inputs_test)
+
+# Create a DataFrame for the PCA results
+pca_df = pd.DataFrame(data=pca_result, columns=['PC1', 'PC2'])
+
+# Add the actual labels to the PCA DataFrame
+pca_df['Actual'] = actual_labels
+
+# Define a custom color palette with distinct colors for each class
+color_palette = sns.color_palette("hsv", n_colors=len(class_labels))
+
+# Create a scatter plot with custom color-coding by actual label
+plt.figure(figsize=(12, 16))
+ax = sns.scatterplot(x='PC1', y='PC2',hue='Actual', data=pca_df, palette=color_palette,s=250)
+plt.xlabel('')
+plt.ylabel('')
+plt.title('')
+ax.set_xticks([])   # Remove x-axis tick labels (numbers)
+ax.set_yticks([])
+custom_labels = class_labels  # Replace with the labels you want
+legend = ax.legend(custom_labels, loc='center left', bbox_to_anchor=(1, 0.5), title=None, markerscale=3.5)
+for label in legend.get_texts():
+    label.set_fontsize(32)
+plt.show()
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+import seaborn as sns
+
+# Perform PCA on the entire dataset before training (for comparison)
+pca = PCA(n_components=2)
+pca_result_before = pca.fit_transform(inputs_test)
+
+# Perform t-SNE on the entire dataset before training
+tsne = TSNE(n_components=2, perplexity=30, n_iter=300)
+tsne_result_before = tsne.fit_transform(inputs_test)
+
+# Create a DataFrame for the PCA and t-SNE results before training
+pca_df_before = pd.DataFrame(data=pca_result_before, columns=['PC1', 'PC2'])
+tsne_df_before = pd.DataFrame(data=tsne_result_before, columns=['TSNE1', 'TSNE2'])
+
+# Split the data into training and testing sets
+# inputs_train, inputs_test, outputs_train, outputs_test = train_test_split(pca_result, outputs, test_size=0.2, random_state=42)
+
+# Assuming you have actual labels and predictions as described in previous responses
+# Create a confusion matrix for after training (you can reuse the existing confusion matrix code)
+
+# Perform t-SNE after model training
+tsne_result_after = tsne.fit_transform(inputs_test)
+
+# Create a DataFrame for the t-SNE results after training
+tsne_df_after = pd.DataFrame(data=tsne_result_after, columns=['TSNE1', 'TSNE2'])
+tsne_df_after['Actual'] = actual_labels  # Add the actual labels to the t-SNE DataFrame
+
+# Define a custom color palette with distinct colors for each class
+color_palette = sns.color_palette("hsv", n_colors=len(GESTURES))
+
+# Create two side-by-side scatter plots (before and after training)
+plt.figure(figsize=(12,16))
+ax = sns.scatterplot(x='TSNE1', y='TSNE2', hue='Actual', data=tsne_df_after, palette=color_palette, s=250)
+plt.xlabel('')
+plt.ylabel('')
+plt.title('')
+ax.set_xticks([])
+ax.set_yticks([])
+custom_labels = class_labels  # Replace with the labels you want
+legend = ax.legend(custom_labels, loc='center left', bbox_to_anchor=(1, 0.5), title="", markerscale=3.5)
+for label in legend.get_texts():
+    label.set_fontsize(32)
+plt.show()
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+
+# Assuming you have actual labels and predictions as described in previous responses
+
+# Create a confusion matrix
+confusion = confusion_matrix(actual_labels, predicted_labels)
+
+# Define the class labels (gesture names)
+class_labels = GESTURES
+
+# Calculate the percentages
+confusion_percentage = (confusion.astype('float') / confusion.sum(axis=1)[:, np.newaxis] * 100).round(0).astype(int)
+
+# Create a DataFrame for the confusion matrix
+confusion_df = pd.DataFrame(confusion_percentage, index=class_labels, columns=class_labels)
+
+# Create a heatmap using seaborn
+plt.figure(figsize=(24, 10))
+sns.set(font_scale=2)  # Adjust the font scale here
+sns.heatmap(confusion_df, annot=True, fmt='d', cmap='Blues')
+plt.xlabel('Predicted', fontsize=20)  # Adjust font size for the x-axis label
+plt.ylabel('Actual', fontsize=20)  # Adjust font size for the y-axis label
+plt.title('Confusion Matrix (Percentage)', fontsize=20)  # Adjust font size for the title
+plt.show()
+# Convert the model to the TensorFlow Lite format without quantization
+converter = tf.lite.TFLiteConverter.from_keras_model(model)
+tflite_model = converter.convert()
+
+# Save the model to disk
+open("gesture_model.tflite", "wb").write(tflite_model)
+
+import os
+basic_model_size = os.path.getsize("gesture_model.tflite")
+print("Model is %d bytes" % basic_model_size)
+!echo "const unsigned char model[] = {" > /content/model.h
+!cat gesture_model.tflite | xxd -i      >> /content/model.h
+!echo "};"                              >> /content/model.h
+
+import os
+model_h_size = os.path.getsize("model.h")
+print(f"Header file, model.h, is {model_h_size:,} bytes.")
+print("\nOpen the side panel (refresh if needed). Double click model.h to download the file.")
